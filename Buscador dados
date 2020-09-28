@@ -1,0 +1,96 @@
+
+library(mise)
+print('teste')
+mise()
+plot('x')
+gc()
+rm(list = ls()) 
+
+library(XML)
+library(RCurl)
+library(rlist)
+library(curl)  
+
+rename_columns<-function(df,caracteres=c('.',',',';',' ','~','*','[',']','{','}','/')){
+  for (i in 1:NCOL(df)){for(j in caracteres){names(df)[i]<-gsub(paste0("\\",j),"",names(df)[i])}}
+  return(df)
+}
+has_letter_or_isfactor <- function(x){
+  x <- x[complete.cases(x),]
+  if(nrow(x)>5000){
+    x<-x[sample(5000),]}
+  temp <-grepl("(.*[a-z].*)(.*[A-Z].*)", x)
+  temp <- colnames(x[,temp, drop=FALSE])
+  return(temp)}
+basic_cleaning_to_numbers <-function(x,na_tol=0.33){
+  y<-x
+  y<-data.frame(lapply(y, as.character), stringsAsFactors = F)
+  y<-data.frame(lapply(y, function(x)gsub('\\.','',x)), stringsAsFactors = F)
+  y[y=='NULL'] <- NA
+  y[y=='-'] <- NA
+  y[y=='<NA>'] <- NA
+  y <- y[, which(colMeans(is.na(y)) < na_tol)]
+  y <- y[which(rowMeans(is.na(y)) < na_tol), ]
+  y<-data.frame(lapply(y, function(x)gsub('\\,','.',x)), stringsAsFactors = F)
+  y<-data.frame(lapply(y, function(x)gsub('\\%','',x)), stringsAsFactors = F)
+  col_txt<-has_letter_or_isfactor(y)
+  y[setdiff(colnames(y),col_txt)]<-data.frame(lapply(y[setdiff(colnames(y),col_txt)], as.numeric), stringsAsFactors = F)
+  return(y)}
+outersect <- function(x, y) {sort(c(setdiff(x, y),setdiff(y, x)))}
+
+tmp <- tempfile()
+curl_download("https://www.fundamentus.com.br/resultado.php?setor=", tmp)
+#theurl<- getURL("https://www.fundamentus.com.br/resultado.php?setor=",.opts = list(ssl.verifypeer = FALSE) )
+tables<- readHTMLTable(tmp)
+tables<- list.clean(tables, fun = is.null, recursive = FALSE)
+tables<- tables$resultado
+tables<- rename_columns(tables)
+tables<- basic_cleaning_to_numbers(tables)
+
+
+names(tables)[2]<-'Cotacao'
+names(tables)[19]<-'PLiq'
+names(tables)[20]<-'Divida'
+campos<-c('Papel','Cotacao','PL','PVP','LiqCorr','DivYield','PSR','CrescRec5a','ROE','PCapGiro','Divida','EBITDA_DivLiq','EBITDA','CapGiro','VLR_DIVIDA','qtde_acoes','GRAHAM','NOTA','PERCENTUAL_NOTA','PERCE_RELAT','dt','nota_rank')
+
+tables$VPA<-tables$Cotacao/tables$PVP
+tables$qtde_acoes<-round(tables$PLiq/tables$VPA,0)
+tables$EV<-tables$qtde_acoes*tables$Cotacao
+tables$CapGiro<- tables$Cotacao/tables$PCapGiro*tables$qtde_acoes
+tables$EBITDA<-tables$EV/tables$EVEBITDA
+tables$VLR_DIVIDA<-tables$PLiq*tables$Divida
+tables$EBITDA_DivLiq<-round((tables$VLR_DIVIDA-tables$CapGiro)/tables$EBITDA,2)
+tables$GRAHAM<-round(tables$PL*tables$PVP,0)
+tables$id_GRAHAM<-ifelse(tables$GRAHAM<=20,1,2)
+tables$NOTA<-ifelse(tables$GRAHAM>0 & tables$GRAHAM<10 & tables$VPA>0,5,ifelse(tables$GRAHAM>0 & tables$GRAHAM<15  & tables$VPA>0,4,ifelse(tables$GRAHAM>0 & tables$GRAHAM<20  & tables$VPA>0,3,-10)))+
+               ifelse(tables$DivYield>=10,3,ifelse(tables$DivYield>=5,2,ifelse(tables$DivYield>0,1,-1)))+
+               ifelse(tables$ROE>=20,3,ifelse(tables$ROE>=15,2,ifelse(tables$ROE>=10,1,ifelse(tables$ROE>=1,0,-5))))+
+               ifelse(tables$LiqCorr>=2.5,3,ifelse(tables$LiqCorr>=2,2,ifelse(tables$LiqCorr>=1.2,1,ifelse(tables$LiqCorr>=1,0,-5))))+
+               ifelse(tables$Divida<=0,3,0)+
+               ifelse(tables$PSR<=0.2 & tables$PSR>0,3,0)+
+               ifelse(tables$CrescRec5a>=10,5,ifelse(tables$CrescRec5a>=5,3,ifelse(tables$CrescRec5a>0,1,ifelse(tables$CrescRec5a<(-5),-5,0))))+
+               ifelse(tables$Liq2meses>50000000,4,ifelse(tables$Liq2meses>10000000,3,ifelse(tables$Liq2meses>1000000,2,ifelse(tables$Liq2meses>200000,1,-10))))+
+               ifelse(tables$Divida>=0 & tables$Divida<=0.3,5,ifelse(tables$Divida>=0 & tables$Divida<=0.6,3,ifelse(tables$Divida>=0 & tables$Divida<=1,1,0)))+
+               ifelse((tables$Divida>=0 & tables$EBITDA_DivLiq<=2) | tables$VLR_DIVIDA<=0,3,ifelse(tables$Divida>=0 & tables$EBITDA_DivLiq<=3.5,2,ifelse(tables$Divida<=5,-3,-6)))+
+               ifelse(tables$PCapGiro>0,round(1/tables$PCapGiro,0),0)+
+               ifelse(tables$VPA<=0,-30,0)+
+               ifelse(tables$PL<=0,-30,0)
+tables$PERCENTUAL_NOTA<-tables$NOTA/29
+
+
+tables$dt<-as.character(Sys.time())
+arquivo_nome<-"Analise Bolsa.csv"
+if(file.exists(arquivo_nome)){
+  dataset <- read.table(file = arquivo_nome, header = TRUE, sep=';',dec = ".", stringsAsFactors = FALSE)
+  dataset$dt<-as.character(dataset$dt)
+  tables<-rbind(dataset,tables)}
+write.table(tables, file=arquivo_nome,row.names=FALSE,sep=";")
+
+
+tables<-tables[tables$PL>0 & tables$PVP>0 & tables$Liq2meses>2000000,]
+tables$PERCE_RELAT<-(tables$PERCENTUAL_NOTA-min(tables$PERCENTUAL_NOTA,na.rm = T))/(max(tables$PERCENTUAL_NOTA,na.rm = T)-min(tables$PERCENTUAL_NOTA,na.rm = T))
+tables<-tables[order(tables$id_GRAHAM,-tables$NOTA,tables$GRAHAM,round(-tables$DivYield,0)),]
+tables$nota_rank<-rank(0-tables$PERCE_RELAT,ties.method= "min")
+print(tables[tables$EBITDA>0 & tables$Liq2meses>1000000,campos]) 
+
+
